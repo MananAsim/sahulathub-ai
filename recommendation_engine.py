@@ -65,24 +65,47 @@ def _load_and_clean(path: str) -> pd.DataFrame:
     print(f"[AI] Dataset ready: {len(df):,} workers loaded.")
     return df
 
+# ─── STEP 2: LAZY Model + index initialisation (Bypasses 9.8s Timeout) ────────
+# We set these to None initially so the server boots in 0.1 seconds!
+data = None
+_model = None
+provider_embeddings = None
+bm25 = None
+is_loaded = False
 
-# ─── STEP 2: Model + index initialisation (runs once) ─────────────────────────
-print("[AI] Initialising model and search indexes...")
+def load_engine_if_needed():
+    global data, _model, provider_embeddings, bm25, is_loaded
+    if is_loaded:
+        return
+        
+    print("[AI] 🚀 First request received! Loading 11MB dataset & AI models now...")
+    data = _load_and_clean(CSV_PATH)
+    
+    _model = SentenceTransformer("all-MiniLM-L6-v2")
+    _descriptions = data["primary_skill"].astype(str).tolist()
+    provider_embeddings = _model.encode(_descriptions, show_progress_bar=False, batch_size=64)
+    
+    _tokenized_corpus = [desc.lower().split() for desc in _descriptions]
+    bm25 = BM25Okapi(_tokenized_corpus)
+    
+    is_loaded = True
+    print("[AI] ✅ Model and indexes fully loaded into memory.")
 
-data: pd.DataFrame = _load_and_clean(CSV_PATH)
 
-# SentenceTransformer — loaded once, shared across all requests
-_model = SentenceTransformer("all-MiniLM-L6-v2")
-
-# Precompute embeddings for all workers (shape: N × 384)
-_descriptions: list[str] = data["primary_skill"].astype(str).tolist()
-provider_embeddings = _model.encode(_descriptions, show_progress_bar=True, batch_size=64)
-
-# BM25 index — tokenised by whitespace
-_tokenized_corpus = [desc.lower().split() for desc in _descriptions]
-bm25 = BM25Okapi(_tokenized_corpus)
-
-print("[AI] Model and indexes ready. ✅")
+# ─── STEP 3: Recommend function ───────────────────────────────────────────────
+def recommend(
+    user_query: str,
+    user_lat: float,
+    user_lng: float,
+    radius_km: float = 50.0,
+    top_n: int = 5,
+) -> list[dict]:
+    
+    # 1. Trigger the lazy load if this is the first time!
+    load_engine_if_needed()
+    
+    user_location = (user_lat, user_lng)
+    df = data.copy()
 
 
 # ─── STEP 3: Recommend function ───────────────────────────────────────────────
